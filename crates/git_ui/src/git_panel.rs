@@ -700,6 +700,8 @@ pub struct GitStatusEntry {
     pub(crate) status: FileStatus,
     pub(crate) staging: StageStatus,
     pub(crate) diff_stat: Option<DiffStat>,
+    pub(crate) staged_diff_stat: Option<DiffStat>,
+    pub(crate) unstaged_diff_stat: Option<DiffStat>,
 }
 
 impl GitStatusEntry {
@@ -4350,6 +4352,8 @@ impl GitPanel {
                 status: entry.status,
                 staging,
                 diff_stat: entry.diff_stat,
+                staged_diff_stat: entry.staged_diff_stat,
+                unstaged_diff_stat: entry.unstaged_diff_stat,
             };
 
             if staging.has_staged() {
@@ -4404,6 +4408,8 @@ impl GitPanel {
                             status: status.status,
                             staging: StageStatus::Staged,
                             diff_stat: status.diff_stat,
+                            staged_diff_stat: status.staged_diff_stat,
+                            unstaged_diff_stat: status.unstaged_diff_stat,
                         });
             }
         }
@@ -4598,6 +4604,14 @@ impl GitPanel {
         }
     }
 
+    fn row_diff_stat(row: &GitStatusRow) -> Option<DiffStat> {
+        match row.section {
+            Section::Staged => row.entry.staged_diff_stat.or(row.entry.diff_stat),
+            Section::Unstaged => row.entry.unstaged_diff_stat.or(row.entry.diff_stat),
+            Section::Conflict | Section::Untracked => row.entry.diff_stat,
+        }
+    }
+
     fn update_counts(&mut self, repo: &Repository) {
         self.show_placeholders = false;
         self.conflicted_count = 0;
@@ -4637,6 +4651,8 @@ impl GitPanel {
                 status: entry.status,
                 staging: entry.status.staging(),
                 diff_stat: entry.diff_stat,
+                staged_diff_stat: entry.staged_diff_stat,
+                unstaged_diff_stat: entry.unstaged_diff_stat,
             };
             let stage_status = GitPanel::stage_status_for_entry(&status_entry, repo);
 
@@ -6946,6 +6962,7 @@ impl GitPanel {
             });
 
         let id_for_diff_stat = id.clone();
+        let row_diff_stat = Self::row_diff_stat(row);
 
         h_flex()
             .id(id)
@@ -6964,7 +6981,7 @@ impl GitPanel {
             .active(|s| s.bg(active_bg))
             .child(name_row)
             .when(GitPanelSettings::get_global(cx).diff_stats, |el| {
-                el.when_some(entry.diff_stat, move |this, stat| {
+                el.when_some(row_diff_stat, move |this, stat| {
                     let id = format!("diff-stat-{}", id_for_diff_stat);
                     this.child(ui::DiffStat::new(
                         id,
@@ -8786,6 +8803,11 @@ mod tests {
                             added: 1,
                             deleted: 1
                         }),
+                        staged_diff_stat: None,
+                        unstaged_diff_stat: Some(DiffStat {
+                            added: 1,
+                            deleted: 1,
+                        }),
                     },
                     Section::Unstaged,
                 )),
@@ -8797,6 +8819,11 @@ mod tests {
                         diff_stat: Some(DiffStat {
                             added: 1,
                             deleted: 1
+                        }),
+                        staged_diff_stat: None,
+                        unstaged_diff_stat: Some(DiffStat {
+                            added: 1,
+                            deleted: 1,
                         }),
                     },
                     Section::Unstaged,
@@ -8825,6 +8852,11 @@ mod tests {
                             added: 1,
                             deleted: 1
                         }),
+                        staged_diff_stat: None,
+                        unstaged_diff_stat: Some(DiffStat {
+                            added: 1,
+                            deleted: 1,
+                        }),
                     },
                     Section::Unstaged,
                 )),
@@ -8836,6 +8868,11 @@ mod tests {
                         diff_stat: Some(DiffStat {
                             added: 1,
                             deleted: 1
+                        }),
+                        staged_diff_stat: None,
+                        unstaged_diff_stat: Some(DiffStat {
+                            added: 1,
+                            deleted: 1,
                         }),
                     },
                     Section::Unstaged,
@@ -9235,6 +9272,90 @@ mod tests {
                     Some(FileStatus::Untracked),
                 ),
             ],
+        );
+    }
+
+    #[test]
+    fn test_row_diff_stat_uses_side_specific_stats() {
+        let entry = GitStatusEntry {
+            repo_path: repo_path("partial.rs"),
+            status: FileStatus::Tracked(git::status::TrackedStatus {
+                index_status: StatusCode::Modified,
+                worktree_status: StatusCode::Modified,
+            }),
+            staging: StageStatus::PartiallyStaged,
+            diff_stat: Some(DiffStat {
+                added: 3,
+                deleted: 1,
+            }),
+            staged_diff_stat: Some(DiffStat {
+                added: 1,
+                deleted: 1,
+            }),
+            unstaged_diff_stat: Some(DiffStat {
+                added: 2,
+                deleted: 0,
+            }),
+        };
+
+        assert_eq!(
+            GitPanel::row_diff_stat(&GitStatusRow {
+                entry: entry.clone(),
+                section: Section::Staged,
+            }),
+            Some(DiffStat {
+                added: 1,
+                deleted: 1,
+            })
+        );
+        assert_eq!(
+            GitPanel::row_diff_stat(&GitStatusRow {
+                entry,
+                section: Section::Unstaged,
+            }),
+            Some(DiffStat {
+                added: 2,
+                deleted: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn test_row_diff_stat_falls_back_to_aggregate_stat() {
+        let entry = GitStatusEntry {
+            repo_path: repo_path("partial.rs"),
+            status: FileStatus::Tracked(git::status::TrackedStatus {
+                index_status: StatusCode::Modified,
+                worktree_status: StatusCode::Modified,
+            }),
+            staging: StageStatus::PartiallyStaged,
+            diff_stat: Some(DiffStat {
+                added: 3,
+                deleted: 1,
+            }),
+            staged_diff_stat: None,
+            unstaged_diff_stat: None,
+        };
+
+        assert_eq!(
+            GitPanel::row_diff_stat(&GitStatusRow {
+                entry: entry.clone(),
+                section: Section::Staged,
+            }),
+            Some(DiffStat {
+                added: 3,
+                deleted: 1,
+            })
+        );
+        assert_eq!(
+            GitPanel::row_diff_stat(&GitStatusRow {
+                entry,
+                section: Section::Unstaged,
+            }),
+            Some(DiffStat {
+                added: 3,
+                deleted: 1,
+            })
         );
     }
 
