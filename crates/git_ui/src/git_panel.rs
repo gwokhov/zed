@@ -4541,11 +4541,6 @@ impl GitPanel {
                         None,
                     );
 
-                    let mut entries = entries;
-                    if sort_by_path {
-                        entries.sort_by(|a, b| a.entry.repo_path.cmp(&b.entry.repo_path));
-                    }
-
                     for entry in entries {
                         push_entry(self, GitListEntry::Status(entry), true, None);
                     }
