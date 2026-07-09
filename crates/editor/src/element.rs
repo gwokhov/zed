@@ -2777,8 +2777,13 @@ impl EditorElement {
                     return None;
                 }
 
+                let diff_marker = match row_info.diff_status.map(|status| status.kind) {
+                    Some(DiffHunkStatusKind::Added) => '+',
+                    Some(DiffHunkStatusKind::Deleted) => '-',
+                    _ => ' ',
+                };
                 let number = relative_number.unwrap_or(&non_relative_number);
-                write!(&mut line_number, "{number}").unwrap();
+                write!(&mut line_number, "{diff_marker}{number}").unwrap();
 
                 let spec = active_rows.get(&display_row);
                 let color = LineNumberStyle::new(
