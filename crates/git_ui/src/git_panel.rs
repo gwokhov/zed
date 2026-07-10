@@ -4726,6 +4726,15 @@ impl GitPanel {
         }
     }
 
+    fn section_file_count(&self, header_index: usize) -> usize {
+        self.entries
+            .iter()
+            .skip(header_index + 1)
+            .take_while(|entry| !matches!(entry, GitListEntry::Header(_)))
+            .filter(|entry| entry.status_entry().is_some())
+            .count()
+    }
+
     fn section_for_entry_index(&self, ix: usize) -> Option<Section> {
         self.entries.get(..=ix)?.iter().rev().find_map(|entry| {
             if let GitListEntry::Header(header) = entry {
@@ -6806,6 +6815,22 @@ impl GitPanel {
         rems(1.75)
     }
 
+    fn render_section_count(count: usize, cx: &Context<Self>) -> AnyElement {
+        h_flex()
+            .px_1p5()
+            .h_4()
+            .min_w_4()
+            .justify_center()
+            .rounded_full()
+            .bg(cx.theme().colors().ghost_element_selected)
+            .child(
+                Label::new(count.to_string())
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+            .into_any_element()
+    }
+
     fn render_list_header(
         &self,
         ix: usize,
@@ -6820,19 +6845,23 @@ impl GitPanel {
         let toggle_state = self.header_state(header.header);
         let section = header.header;
         let weak = cx.weak_entity();
+        let action_weak = weak.clone();
         let staging_action = Self::staging_action_for_section(section);
         let staging_conflict = GitPanelSettings::get_global(cx).group_by
             == GitPanelGroupBy::Staging
             && section == Section::Conflict;
+        let section_file_count = self.section_file_count(ix);
 
         h_flex()
             .id(id)
-            .when(!staging_conflict, |this| this.cursor_pointer())
+            .when(staging_action.is_none() && !staging_conflict, |this| {
+                this.cursor_pointer()
+            })
             .group(group_name)
             .h(self.list_item_height())
             .w_full()
             .pl_3()
-            .pr_1()
+            .pr_3()
             .gap_2()
             .justify_between()
             .hover(|s| s.bg(cx.theme().colors().ghost_element_hover))
@@ -6843,26 +6872,49 @@ impl GitPanel {
                     .color(Color::Muted)
                     .size(LabelSize::Small),
             )
-            .child(if staging_conflict {
-                div().into_any_element()
-            } else if let Some(action) = staging_action {
-                Self::staging_action_button(
-                    checkbox_id,
-                    action.icon,
-                    action.label,
-                    !has_write_access,
-                )
-                .tooltip(move |_window, cx| Tooltip::simple(format!("{} all", action.label), cx))
-                .into_any_element()
-            } else {
-                Checkbox::new(checkbox_id, toggle_state)
-                    .disabled(!has_write_access)
-                    .fill()
-                    .elevation(ElevationIndex::Surface)
-                    .into_any_element()
-            })
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(Self::render_section_count(section_file_count, cx))
+                    .child(if staging_conflict {
+                        div().into_any_element()
+                    } else if let Some(action) = staging_action {
+                        Self::staging_action_button(
+                            checkbox_id,
+                            action.icon,
+                            action.label,
+                            !has_write_access,
+                        )
+                        .tooltip(move |_window, cx| {
+                            Tooltip::simple(format!("{} all", action.label), cx)
+                        })
+                        .on_click(move |_, window, cx| {
+                            if !has_write_access {
+                                return;
+                            }
+
+                            action_weak
+                                .update(cx, |this, cx| {
+                                    this.toggle_staged_for_entry(
+                                        &GitListEntry::Header(GitHeaderEntry { header: section }),
+                                        window,
+                                        cx,
+                                    );
+                                    cx.stop_propagation();
+                                })
+                                .ok();
+                        })
+                        .into_any_element()
+                    } else {
+                        Checkbox::new(checkbox_id, toggle_state)
+                            .disabled(!has_write_access)
+                            .fill()
+                            .elevation(ElevationIndex::Surface)
+                            .into_any_element()
+                    }),
+            )
             .on_click(move |_, window, cx| {
-                if !has_write_access || staging_conflict {
+                if !has_write_access || staging_conflict || staging_action.is_some() {
                     return;
                 }
 
@@ -7149,7 +7201,7 @@ impl GitPanel {
             .h(self.list_item_height())
             .w_full()
             .pl_3()
-            .pr_1()
+            .pr_3()
             .gap_1p5()
             .border_1()
             .border_r_2()
@@ -7398,7 +7450,7 @@ impl GitPanel {
             .min_w_0()
             .w_full()
             .pl_3()
-            .pr_1()
+            .pr_3()
             .gap_1p5()
             .justify_between()
             .border_1()
