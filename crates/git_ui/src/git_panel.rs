@@ -4888,6 +4888,15 @@ impl GitPanel {
         }
     }
 
+    fn section_file_count(&self, header_index: usize) -> usize {
+        self.entries
+            .iter()
+            .skip(header_index + 1)
+            .take_while(|entry| !matches!(entry, GitListEntry::Header(_)))
+            .filter(|entry| entry.status_entry().is_some())
+            .count()
+    }
+
     fn section_for_entry_index(&self, ix: usize) -> Option<Section> {
         self.entries.get(..=ix)?.iter().rev().find_map(|entry| {
             if let GitListEntry::Header(header) = entry {
@@ -7086,6 +7095,22 @@ impl GitPanel {
         rems(1.75)
     }
 
+    fn render_section_count(count: usize, cx: &Context<Self>) -> AnyElement {
+        h_flex()
+            .px_1p5()
+            .h_4()
+            .min_w_4()
+            .justify_center()
+            .rounded_full()
+            .bg(cx.theme().colors().ghost_element_selected)
+            .child(
+                Label::new(count.to_string())
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+            .into_any_element()
+    }
+
     fn render_list_header(
         &self,
         ix: usize,
@@ -7110,6 +7135,7 @@ impl GitPanel {
             .entries
             .get(ix + 1)
             .is_some_and(GitListEntry::is_selectable);
+        let section_file_count = self.section_file_count(ix);
 
         h_flex()
             .id(id)
@@ -7117,7 +7143,7 @@ impl GitPanel {
             .h(self.list_item_height())
             .w_full()
             .pl_2p5()
-            .pr_1()
+            .pr_3()
             .gap_2()
             .justify_between()
             .when(!section_is_empty && !all_conflicts_resolved, |this| {
@@ -7131,30 +7157,35 @@ impl GitPanel {
                     .color(Color::Muted)
                     .size(LabelSize::Small),
             )
-            .child(if section_is_empty {
-                gpui::Empty.into_any_element()
-            } else {
-                let checkbox = Checkbox::new(checkbox_id, toggle_state)
-                    .disabled(!has_write_access || all_conflicts_resolved)
-                    .fill()
-                    .elevation(ElevationIndex::Surface);
-                let tooltip_label = if all_conflicts_resolved {
-                    Some("All conflicts marked as resolved")
-                } else {
-                    match stage_intent {
-                        StageIntent::Stage => Some("Stage All"),
-                        StageIntent::Unstage => Some("Unstage All"),
-                        StageIntent::Toggle => None,
-                    }
-                };
-                if let Some(label) = tooltip_label {
-                    checkbox
-                        .tooltip(move |_window, cx| Tooltip::simple(label, cx))
-                        .into_any_element()
-                } else {
-                    checkbox.into_any_element()
-                }
-            })
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(Self::render_section_count(section_file_count, cx))
+                    .child(if section_is_empty {
+                        gpui::Empty.into_any_element()
+                    } else {
+                        let checkbox = Checkbox::new(checkbox_id, toggle_state)
+                            .disabled(!has_write_access || all_conflicts_resolved)
+                            .fill()
+                            .elevation(ElevationIndex::Surface);
+                        let tooltip_label = if all_conflicts_resolved {
+                            Some("All conflicts marked as resolved")
+                        } else {
+                            match stage_intent {
+                                StageIntent::Stage => Some("Stage All"),
+                                StageIntent::Unstage => Some("Unstage All"),
+                                StageIntent::Toggle => None,
+                            }
+                        };
+                        if let Some(label) = tooltip_label {
+                            checkbox
+                                .tooltip(move |_window, cx| Tooltip::simple(label, cx))
+                                .into_any_element()
+                        } else {
+                            checkbox.into_any_element()
+                        }
+                    }),
+            )
             .on_click(move |_, window, cx| {
                 if !has_write_access || section_is_empty || all_conflicts_resolved {
                     return;
@@ -7485,7 +7516,7 @@ impl GitPanel {
             .h(self.list_item_height())
             .w_full()
             .pl_2p5()
-            .pr_1()
+            .pr_3()
             .gap_1p5()
             .border_1()
             .border_r_2()
@@ -7690,7 +7721,7 @@ impl GitPanel {
             .min_w_0()
             .w_full()
             .pl_2p5()
-            .pr_1()
+            .pr_3()
             .gap_1p5()
             .justify_between()
             .border_1()
