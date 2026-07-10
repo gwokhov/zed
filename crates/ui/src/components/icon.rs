@@ -69,10 +69,10 @@ pub enum IconSize {
 impl IconSize {
     pub fn rems(self) -> Rems {
         match self {
-            IconSize::Indicator => rems_from_px(10_f32),
-            IconSize::XSmall => rems_from_px(12_f32),
-            IconSize::Small => rems_from_px(14_f32),
-            IconSize::Medium => rems_from_px(16_f32),
+            IconSize::Indicator => rems_from_px(11_f32),
+            IconSize::XSmall => rems_from_px(14_f32),
+            IconSize::Small => rems_from_px(16_f32),
+            IconSize::Medium => rems_from_px(18_f32),
             IconSize::XLarge => rems_from_px(48_f32),
             IconSize::Custom(size) => size,
         }
