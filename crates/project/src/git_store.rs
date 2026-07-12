@@ -3978,7 +3978,12 @@ impl GitStore {
 
         repository_handle
             .update(&mut cx, |repository_handle, cx| {
-                repository_handle.checkout_files(&envelope.payload.commit, paths, cx)
+                repository_handle.checkout_files(
+                    (!envelope.payload.commit.is_empty())
+                        .then_some(envelope.payload.commit.as_str()),
+                    paths,
+                    cx,
+                )
             })
             .await?;
         Ok(proto::Ack {})
@@ -6338,11 +6343,11 @@ impl Repository {
 
     pub fn checkout_files(
         &mut self,
-        commit: &str,
+        commit: Option<&str>,
         paths: Vec<RepoPath>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        let commit = commit.to_string();
+        let commit = commit.map(str::to_string);
         let id = self.id;
 
         self.spawn_job_with_tracking(
@@ -6353,7 +6358,15 @@ impl Repository {
                 this.update(cx, |this, _cx| {
                     this.send_job(
                         "checkout_files",
-                        Some(format!("git checkout {}", commit).into()),
+                        Some(
+                            commit
+                                .as_ref()
+                                .map_or_else(
+                                    || "git checkout".to_string(),
+                                    |commit| format!("git checkout {commit}"),
+                                )
+                                .into(),
+                        ),
                         move |git_repo, _| async move {
                             match git_repo {
                                 RepositoryState::Local(LocalRepositoryState {
@@ -6373,7 +6386,7 @@ impl Repository {
                                         .request(proto::GitCheckoutFiles {
                                             project_id: project_id.0,
                                             repository_id: id.to_proto(),
-                                            commit,
+                                            commit: commit.unwrap_or_default(),
                                             paths: paths
                                                 .into_iter()
                                                 .map(|p| p.as_unix_str().to_owned())
@@ -8866,7 +8879,7 @@ impl Repository {
                         DiffType::HeadToIndex => {
                             (proto::git_diff::DiffType::HeadToIndex.into(), None)
                         }
-                        DiffType::HeadToWorktree => {
+                        DiffType::HeadToWorktree | DiffType::IndexToWorktree => {
                             (proto::git_diff::DiffType::HeadToWorktree.into(), None)
                         }
                         DiffType::MergeBase { base_ref } => (
