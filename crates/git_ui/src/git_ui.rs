@@ -340,8 +340,15 @@ fn open_file_diff(
     cx: &mut App,
 ) {
     window.defer(cx, move |window, cx| {
-        SoloDiffView::open_or_focus(entry, repository, workspace.clone(), window, cx)
-            .detach_and_notify_err(workspace, window, cx);
+        SoloDiffView::open_or_focus(
+            entry,
+            solo_diff_view::SoloDiffTarget::Uncommitted,
+            repository,
+            workspace.clone(),
+            window,
+            cx,
+        )
+        .detach_and_notify_err(workspace, window, cx);
     });
 }
 
