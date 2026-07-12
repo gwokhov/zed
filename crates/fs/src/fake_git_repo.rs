@@ -334,7 +334,7 @@ impl GitRepository for FakeGitRepository {
 
     fn checkout_files(
         &self,
-        _commit: String,
+        _commit: Option<String>,
         _paths: Vec<RepoPath>,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
@@ -1156,6 +1156,7 @@ impl GitRepository for FakeGitRepository {
 
     fn diff_stat(
         &self,
+        diff_type: git::repository::DiffType,
         path_prefixes: &[RepoPath],
     ) -> BoxFuture<'static, Result<git::status::GitDiffStat>> {
         fn count_lines(s: &str) -> u32 {
@@ -1203,11 +1204,22 @@ impl GitRepository for FakeGitRepository {
 
         self.with_state_async(false, move |state| {
             let mut entries = Vec::new();
-            let all_paths: HashSet<&RepoPath> = state
-                .head_contents
+            let base_contents = match diff_type {
+                git::repository::DiffType::HeadToIndex
+                | git::repository::DiffType::HeadToWorktree => &state.head_contents,
+                git::repository::DiffType::IndexToWorktree => &state.index_contents,
+                git::repository::DiffType::MergeBase { .. } => &state.head_contents,
+            };
+            let target_contents = match diff_type {
+                git::repository::DiffType::HeadToIndex => &state.index_contents,
+                git::repository::DiffType::HeadToWorktree
+                | git::repository::DiffType::IndexToWorktree
+                | git::repository::DiffType::MergeBase { .. } => &worktree_files,
+            };
+            let all_paths: HashSet<&RepoPath> = base_contents
                 .keys()
                 .chain(
-                    worktree_files
+                    target_contents
                         .keys()
                         .filter(|p| state.index_contents.contains_key(*p)),
                 )
@@ -1216,9 +1228,9 @@ impl GitRepository for FakeGitRepository {
                 if !matches_prefixes(path, &path_prefixes) {
                     continue;
                 }
-                let head = state.head_contents.get(path);
-                let worktree = worktree_files.get(path);
-                match (head, worktree) {
+                let base = base_contents.get(path);
+                let target = target_contents.get(path);
+                match (base, target) {
                     (Some(old), Some(new)) if old != new => {
                         entries.push((
                             path.clone(),
