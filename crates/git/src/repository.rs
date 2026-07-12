@@ -975,7 +975,7 @@ pub trait GitRepository: Send + Sync {
 
     fn checkout_files(
         &self,
-        commit: String,
+        commit: Option<String>,
         paths: Vec<RepoPath>,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>>;
@@ -1191,6 +1191,7 @@ pub trait GitRepository: Send + Sync {
 pub enum DiffType {
     HeadToIndex,
     HeadToWorktree,
+    IndexToWorktree,
     MergeBase { base_ref: SharedString },
 }
 
@@ -1614,7 +1615,7 @@ impl GitRepository for RealGitRepository {
 
     fn checkout_files(
         &self,
-        commit: String,
+        commit: Option<String>,
         paths: Vec<RepoPath>,
         env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
@@ -1625,8 +1626,12 @@ impl GitRepository for RealGitRepository {
                 return Ok(());
             }
 
-            let output = git
-                .build_command(&["checkout", &commit, "--"])
+            let mut command = git.build_command(&["checkout"]);
+            if let Some(commit) = commit.as_deref() {
+                command.arg(commit);
+            }
+            let output = command
+                .arg("--")
                 .envs(env.iter())
                 .args(paths.iter().map(|path| path.as_unix_str()))
                 .output()
@@ -2321,7 +2326,9 @@ impl GitRepository for RealGitRepository {
                     DiffType::HeadToIndex => {
                         git.build_command(&["diff", "--staged"]).output().await?
                     }
-                    DiffType::HeadToWorktree => git.build_command(&["diff"]).output().await?,
+                    DiffType::HeadToWorktree | DiffType::IndexToWorktree => {
+                        git.build_command(&["diff"]).output().await?
+                    }
                     DiffType::MergeBase { base_ref } => {
                         git.build_command(&["diff", "--merge-base", base_ref.as_ref()])
                             .output()

@@ -1,4 +1,7 @@
-use crate::{git_panel::GitStatusEntry, git_panel_settings::GitPanelSettings, git_status_icon};
+use crate::{
+    git_panel::GitStatusEntry, git_panel_settings::GitPanelSettings, git_status_icon,
+    staged_diff::StagedDiffDelegate, unstaged_diff::UnstagedDiffDelegate,
+};
 use anyhow::{Context as _, Result};
 use buffer_diff::DiffHunkSecondaryStatus;
 use editor::{
@@ -41,6 +44,7 @@ pub struct SoloDiffView {
     repository: Entity<Repository>,
     repository_id: RepositoryId,
     repo_path: RepoPath,
+    target: SoloDiffTarget,
     buffer: Entity<Buffer>,
     diff: Entity<buffer_diff::BufferDiff>,
     editor: Entity<SplittableEditor>,
@@ -49,9 +53,17 @@ pub struct SoloDiffView {
     _settings_subscription: Subscription,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SoloDiffTarget {
+    Uncommitted,
+    Staged,
+    Unstaged,
+}
+
 impl SoloDiffView {
-    pub fn open_or_focus(
+    pub(crate) fn open_or_focus(
         entry: GitStatusEntry,
+        target: SoloDiffTarget,
         repository: Entity<Repository>,
         workspace: WeakEntity<Workspace>,
         window: &mut Window,
@@ -64,7 +76,10 @@ impl SoloDiffView {
         let existing = workspace_entity
             .read(cx)
             .items_of_type::<SoloDiffView>(cx)
-            .find(|item| item.read(cx).matches(&repository, &entry.repo_path, cx));
+            .find(|item| {
+                item.read(cx)
+                    .matches(&repository, &entry.repo_path, target, cx)
+            });
         if let Some(existing) = existing {
             workspace_entity.update(cx, |workspace, cx| {
                 workspace.activate_item(&existing, true, true, window, cx);
@@ -91,11 +106,30 @@ impl SoloDiffView {
                     project.open_buffer(project_path.clone(), cx)
                 })
                 .await?;
-            let diff = project
-                .update(cx, |project, cx| {
-                    project.open_uncommitted_diff(buffer.clone(), cx)
-                })
-                .await?;
+            let (buffer, diff) = match target {
+                SoloDiffTarget::Uncommitted => {
+                    let diff = project
+                        .update(cx, |project, cx| {
+                            project.open_uncommitted_diff(buffer.clone(), cx)
+                        })
+                        .await?;
+                    (buffer, diff)
+                }
+                SoloDiffTarget::Staged => {
+                    let (diff, index_buffer) = project
+                        .update(cx, |project, cx| project.open_staged_diff(buffer, cx))
+                        .await?;
+                    (index_buffer, diff)
+                }
+                SoloDiffTarget::Unstaged => {
+                    let diff = project
+                        .update(cx, |project, cx| {
+                            project.open_unstaged_diff(buffer.clone(), cx)
+                        })
+                        .await?;
+                    (buffer, diff)
+                }
+            };
 
             workspace_entity.update_in(cx, |workspace, window, cx| {
                 let workspace_handle = cx.entity();
@@ -104,6 +138,7 @@ impl SoloDiffView {
                         project,
                         repository,
                         repo_path,
+                        target,
                         buffer,
                         diff,
                         workspace_handle,
@@ -122,6 +157,7 @@ impl SoloDiffView {
         project: Entity<Project>,
         repository: Entity<Repository>,
         repo_path: RepoPath,
+        target: SoloDiffTarget,
         buffer: Entity<Buffer>,
         diff: Entity<buffer_diff::BufferDiff>,
         workspace: Entity<Workspace>,
@@ -141,6 +177,15 @@ impl SoloDiffView {
                 window,
                 cx,
             );
+            match target {
+                SoloDiffTarget::Staged => {
+                    editor.set_diff_hunk_delegate(Some(Arc::new(StagedDiffDelegate)), cx)
+                }
+                SoloDiffTarget::Unstaged => {
+                    editor.set_diff_hunk_delegate(Some(Arc::new(UnstagedDiffDelegate)), cx)
+                }
+                SoloDiffTarget::Uncommitted => {}
+            }
             editor.rhs_editor().update(cx, |editor, cx| {
                 editor.set_should_serialize(false, cx);
                 editor.set_allow_git_diff_scrollbar_markers(showing_full_file, cx);
@@ -176,6 +221,7 @@ impl SoloDiffView {
             repository,
             repository_id,
             repo_path,
+            target,
             buffer,
             diff,
             editor,
@@ -261,8 +307,16 @@ impl SoloDiffView {
         cx.notify();
     }
 
-    fn matches(&self, repository: &Entity<Repository>, repo_path: &RepoPath, cx: &App) -> bool {
-        self.repository_id == repository.read(cx).id && &self.repo_path == repo_path
+    fn matches(
+        &self,
+        repository: &Entity<Repository>,
+        repo_path: &RepoPath,
+        target: SoloDiffTarget,
+        cx: &App,
+    ) -> bool {
+        self.repository_id == repository.read(cx).id
+            && &self.repo_path == repo_path
+            && self.target == target
     }
 
     fn button_states(&self, cx: &App) -> SoloDiffButtonStates {
@@ -294,6 +348,13 @@ impl SoloDiffView {
         let mut stage = false;
         let mut unstage = false;
         for hunk in editor.diff_hunks_in_ranges(&ranges, &snapshot) {
+            if self.target == SoloDiffTarget::Staged {
+                unstage = true;
+                continue;
+            } else if self.target == SoloDiffTarget::Unstaged {
+                stage = true;
+                continue;
+            }
             match hunk.status.secondary {
                 DiffHunkSecondaryStatus::HasSecondaryHunk
                 | DiffHunkSecondaryStatus::SecondaryHunkAdditionPending => {
@@ -320,11 +381,11 @@ impl SoloDiffView {
         SoloDiffButtonStates {
             stage,
             unstage,
-            restore: stage || unstage,
+            restore: self.target != SoloDiffTarget::Staged && (stage || unstage),
             prev_next,
             selection,
-            stage_file: stage_status.has_unstaged(),
-            unstage_file: stage_status.has_staged(),
+            stage_file: self.target != SoloDiffTarget::Staged && stage_status.has_unstaged(),
+            unstage_file: self.target != SoloDiffTarget::Unstaged && stage_status.has_staged(),
         }
     }
 
@@ -688,6 +749,30 @@ impl SoloDiffGitToolbar {
             });
         }
     }
+
+    fn open_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(solo_diff) = self.solo_diff() else {
+            return;
+        };
+        let (project_path, workspace) = {
+            let solo_diff = solo_diff.read(cx);
+            let Some(project_path) = solo_diff
+                .repository
+                .read(cx)
+                .repo_path_to_project_path(&solo_diff.repo_path, cx)
+            else {
+                return;
+            };
+            (project_path, solo_diff.workspace.clone())
+        };
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace
+                    .open_path(project_path, None, true, window, cx)
+                    .detach_and_log_err(cx);
+            })
+            .ok();
+    }
 }
 
 impl EventEmitter<ToolbarItemEvent> for SoloDiffGitToolbar {}
@@ -769,12 +854,17 @@ impl Render for SoloDiffGitToolbar {
 
         let focus_handle = solo_diff.focus_handle(cx);
         let solo_diff = solo_diff.read(cx);
+        let target = solo_diff.target;
         let button_states = solo_diff.button_states(cx);
         let status_entry = solo_diff
             .repository
             .read(cx)
             .status_for_path(&solo_diff.repo_path);
-        let diff_stat = status_entry.and_then(|entry| entry.diff_stat);
+        let diff_stat = status_entry.and_then(|entry| match solo_diff.target {
+            SoloDiffTarget::Unstaged => entry.unstaged_diff_stat,
+            SoloDiffTarget::Staged => entry.staged_diff_stat,
+            SoloDiffTarget::Uncommitted => entry.diff_stat,
+        });
 
         h_flex()
             .my_neg_1()
@@ -819,57 +909,76 @@ impl Render for SoloDiffGitToolbar {
             .child(
                 h_group_sm()
                     .when(button_states.selection, |el| {
+                        let (label, tooltip, action) = match solo_diff.target {
+                            SoloDiffTarget::Unstaged => {
+                                ("Stage", "Stage Selected Hunks", StageAndNext.boxed_clone())
+                            }
+                            SoloDiffTarget::Staged => (
+                                "Unstage",
+                                "Unstage Selected Hunks",
+                                UnstageAndNext.boxed_clone(),
+                            ),
+                            SoloDiffTarget::Uncommitted => {
+                                ("Toggle Staged", "Toggle Staged", ToggleStaged.boxed_clone())
+                            }
+                        };
                         el.child(
-                            Button::new("stage", "Toggle Staged")
+                            Button::new("stage", label)
                                 .disabled(!button_states.stage && !button_states.unstage)
                                 .tooltip(Tooltip::for_action_title_in(
-                                    "Toggle Staged",
-                                    &ToggleStaged,
+                                    tooltip,
+                                    action.as_ref(),
                                     &focus_handle,
                                 ))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.dispatch_action(&ToggleStaged, window, cx)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.dispatch_action(action.as_ref(), window, cx)
                                 })),
                         )
                     })
                     .when(!button_states.selection, |el| {
-                        el.child(
-                            Button::new("stage", "Stage")
-                                .disabled(!button_states.stage)
-                                .tooltip(Tooltip::for_action_title_in(
-                                    "Stage and Go to Next Hunk",
-                                    &StageAndNext,
-                                    &focus_handle,
-                                ))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.dispatch_action(&StageAndNext, window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("unstage", "Unstage")
-                                .disabled(!button_states.unstage)
-                                .tooltip(Tooltip::for_action_title_in(
-                                    "Unstage and Go to Next Hunk",
-                                    &UnstageAndNext,
-                                    &focus_handle,
-                                ))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.dispatch_action(&UnstageAndNext, window, cx)
-                                })),
-                        )
+                        el.when(target != SoloDiffTarget::Staged, |el| {
+                            el.child(
+                                Button::new("stage", "Stage")
+                                    .disabled(!button_states.stage)
+                                    .tooltip(Tooltip::for_action_title_in(
+                                        "Stage and Go to Next Hunk",
+                                        &StageAndNext,
+                                        &focus_handle,
+                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.dispatch_action(&StageAndNext, window, cx)
+                                    })),
+                            )
+                        })
+                        .when(target != SoloDiffTarget::Unstaged, |el| {
+                            el.child(
+                                Button::new("unstage", "Unstage")
+                                    .disabled(!button_states.unstage)
+                                    .tooltip(Tooltip::for_action_title_in(
+                                        "Unstage and Go to Next Hunk",
+                                        &UnstageAndNext,
+                                        &focus_handle,
+                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.dispatch_action(&UnstageAndNext, window, cx)
+                                    })),
+                            )
+                        })
                     })
-                    .child(
-                        Button::new("restore", "Restore")
-                            .tooltip(Tooltip::for_action_title_in(
-                                "Restore selected hunk",
-                                &Restore,
-                                &focus_handle,
-                            ))
-                            .disabled(!button_states.restore)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.dispatch_action(&Restore, window, cx)
-                            })),
-                    ),
+                    .when(target != SoloDiffTarget::Staged, |el| {
+                        el.child(
+                            Button::new("restore", "Restore")
+                                .tooltip(Tooltip::for_action_title_in(
+                                    "Restore selected hunk",
+                                    &Restore,
+                                    &focus_handle,
+                                ))
+                                .disabled(!button_states.restore)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.dispatch_action(&Restore, window, cx)
+                                })),
+                        )
+                    }),
             )
             .child(Divider::vertical())
             .child(h_group_sm().child(if button_states.stage_file {
@@ -903,6 +1012,14 @@ impl Render for SoloDiffGitToolbar {
                     ))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.dispatch_action(&Commit, window, cx);
+                    })),
+            )
+            .child(Divider::vertical())
+            .child(
+                Button::new("open-file", "Open File")
+                    .tooltip(Tooltip::text("Open File"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_file(window, cx);
                     })),
             )
             .into_any_element()

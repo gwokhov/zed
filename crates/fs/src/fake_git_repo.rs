@@ -334,7 +334,7 @@ impl GitRepository for FakeGitRepository {
 
     fn checkout_files(
         &self,
-        _commit: String,
+        _commit: Option<String>,
         _paths: Vec<RepoPath>,
         _env: Arc<HashMap<String, String>>,
     ) -> BoxFuture<'_, Result<()>> {
