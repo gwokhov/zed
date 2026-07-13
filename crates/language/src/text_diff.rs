@@ -195,57 +195,28 @@ pub fn word_diff_ranges(
     let mut new_ranges: Vec<Range<usize>> = Vec::new();
 
     diff_internal(&input, &mut |old_byte_range, new_byte_range, _, _| {
-        if old_byte_range.is_empty() || new_byte_range.is_empty() {
-            push_diff_range(&mut old_ranges, old_byte_range);
-            push_diff_range(&mut new_ranges, new_byte_range);
-            return;
+        if !old_byte_range.is_empty() {
+            if let Some(last) = old_ranges.last_mut()
+                && last.end >= old_byte_range.start
+            {
+                last.end = old_byte_range.end;
+            } else {
+                old_ranges.push(old_byte_range);
+            }
         }
 
-        let old_start = old_byte_range.start;
-        let new_start = new_byte_range.start;
-        let (old_char_ranges, new_char_ranges) =
-            char_diff_ranges(&old_text[old_byte_range], &new_text[new_byte_range]);
-        for range in old_char_ranges {
-            push_diff_range(
-                &mut old_ranges,
-                old_start + range.start..old_start + range.end,
-            );
-        }
-        for range in new_char_ranges {
-            push_diff_range(
-                &mut new_ranges,
-                new_start + range.start..new_start + range.end,
-            );
+        if !new_byte_range.is_empty() {
+            if let Some(last) = new_ranges.last_mut()
+                && last.end >= new_byte_range.start
+            {
+                last.end = new_byte_range.end;
+            } else {
+                new_ranges.push(new_byte_range);
+            }
         }
     });
 
     (old_ranges, new_ranges)
-}
-
-fn char_diff_ranges(old_text: &str, new_text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-    let mut input: InternedInput<&str> = InternedInput::default();
-    input.update_before(tokenize_chars(old_text));
-    input.update_after(tokenize_chars(new_text));
-    let mut old_ranges = Vec::new();
-    let mut new_ranges = Vec::new();
-    diff_internal(&input, &mut |old_range, new_range, _, _| {
-        push_diff_range(&mut old_ranges, old_range);
-        push_diff_range(&mut new_ranges, new_range);
-    });
-    (old_ranges, new_ranges)
-}
-
-fn push_diff_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>) {
-    if range.is_empty() {
-        return;
-    }
-    if let Some(last) = ranges.last_mut()
-        && last.end >= range.start
-    {
-        last.end = range.end;
-    } else {
-        ranges.push(range);
-    }
 }
 
 /// Computes character-level diff between two strings.
