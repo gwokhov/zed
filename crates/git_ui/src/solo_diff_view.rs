@@ -3,7 +3,7 @@ use crate::{
     staged_diff::StagedDiffDelegate, unstaged_diff::UnstagedDiffDelegate,
 };
 use anyhow::{Context as _, Result};
-use buffer_diff::DiffHunkSecondaryStatus;
+use buffer_diff::{BufferDiffEvent, DiffHunkSecondaryStatus};
 use editor::{
     DiffStyleControls, Direction, Editor, EditorEvent, EditorSettings, SplittableEditor,
     ToggleSplitDiff,
@@ -50,6 +50,7 @@ pub struct SoloDiffView {
     editor: Entity<SplittableEditor>,
     workspace: WeakEntity<Workspace>,
     showing_full_file: bool,
+    _diff_subscription: Subscription,
     _settings_subscription: Subscription,
 }
 
@@ -224,6 +225,11 @@ impl SoloDiffView {
                     cx.notify();
                 }
             });
+        let diff_subscription = cx.subscribe(&diff, |this, _, event, cx| {
+            if matches!(event, BufferDiffEvent::DiffChanged(_)) {
+                this.refresh_excerpts(cx);
+            }
+        });
 
         Self {
             repository,
@@ -235,6 +241,7 @@ impl SoloDiffView {
             editor,
             workspace: workspace.downgrade(),
             showing_full_file: false,
+            _diff_subscription: diff_subscription,
             _settings_subscription: settings_subscription,
         }
     }
@@ -254,6 +261,24 @@ impl SoloDiffView {
             )
             .map(|diff_hunk| diff_hunk.buffer_range.to_point(buffer))
             .collect()
+    }
+
+    fn refresh_excerpts(&mut self, cx: &mut Context<Self>) {
+        if self.showing_full_file {
+            return;
+        }
+
+        let ranges = Self::hunk_ranges(&self.buffer, &self.diff, cx);
+        self.editor.update(cx, |editor, cx| {
+            editor.update_excerpts_for_path(
+                PathKey::for_buffer(&self.buffer, cx),
+                self.buffer.clone(),
+                ranges,
+                excerpt_context_lines(cx),
+                self.diff.clone(),
+                cx,
+            );
+        });
     }
 
     fn set_showing_full_file(&mut self, showing_full_file: bool, cx: &mut Context<Self>) {
