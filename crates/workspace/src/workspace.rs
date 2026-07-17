@@ -4546,7 +4546,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> bool {
         if let Some(center_pane) = self.last_active_center_pane.clone() {
-            if let Some(center_pane) = center_pane.upgrade() {
+            if center_pane.upgrade().is_some() {
+                let center_pane = self.pane_for_new_item(Some(center_pane), cx);
                 center_pane.update(cx, |pane, cx| {
                     pane.add_item(item, true, true, None, window, cx)
                 });
@@ -4588,6 +4589,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let pane = self.pane_for_new_item(Some(pane.downgrade()), cx);
         pane.update(cx, |pane, cx| {
             pane.add_item(
                 item,
@@ -4687,6 +4689,7 @@ impl Workspace {
                     .downgrade()
             })
         });
+        let pane = self.pane_for_new_item(Some(pane), cx).downgrade();
 
         let project_path = path.into();
         let task = self.load_path(project_path.clone(), window, cx);
@@ -4943,6 +4946,7 @@ impl Workspace {
     where
         T: ProjectItem,
     {
+        let pane = self.pane_for_new_item(Some(pane.downgrade()), cx);
         let old_item_id = pane.read(cx).active_item().map(|item| item.item_id());
 
         if let Some(item) = self.find_project_item(&pane, &project_item, cx) {
@@ -5720,7 +5724,7 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            pane::Event::ItemPinned | pane::Event::ItemUnpinned => {}
+            pane::Event::FrozenChanged | pane::Event::ItemPinned | pane::Event::ItemUnpinned => {}
         }
 
         if serialize_workspace {
@@ -5871,6 +5875,33 @@ impl Workspace {
 
     pub fn panes(&self) -> &[Entity<Pane>] {
         &self.panes
+    }
+
+    fn pane_for_new_item(&self, pane: Option<WeakEntity<Pane>>, cx: &App) -> Entity<Pane> {
+        let pane = pane
+            .and_then(|pane| pane.upgrade())
+            .or_else(|| {
+                self.last_active_center_pane
+                    .as_ref()
+                    .and_then(WeakEntity::upgrade)
+            })
+            .unwrap_or_else(|| self.center.first_pane());
+        if !pane.read(cx).is_frozen() {
+            return pane;
+        }
+
+        let panes = self.center.panes();
+        let start = panes
+            .iter()
+            .position(|candidate| **candidate == pane)
+            .unwrap_or(0);
+        panes
+            .iter()
+            .cycle()
+            .skip(start + 1)
+            .take(panes.len())
+            .find(|candidate| !candidate.read(cx).is_frozen())
+            .map_or(pane, |pane| (*pane).clone())
     }
 
     pub fn active_pane(&self) -> &Entity<Pane> {
@@ -7052,6 +7083,11 @@ impl Workspace {
         if self.last_active_center_pane == Some(pane.downgrade()) {
             self.last_active_center_pane = None;
         }
+        if !self.panes.iter().any(|pane| !pane.read(cx).is_frozen())
+            && let Some(pane) = self.panes.first()
+        {
+            pane.update(cx, |pane, cx| pane.set_frozen(false, cx));
+        }
         cx.notify();
     }
 
@@ -7082,7 +7118,7 @@ impl Workspace {
             window: &mut Window,
             cx: &mut App,
         ) -> SerializedPane {
-            let (items, active, pinned_count) = {
+            let (items, active, pinned_count, frozen) = {
                 let pane = pane_handle.read(cx);
                 let active_item_id = pane.active_item().map(|item| item.item_id());
                 (
@@ -7100,10 +7136,16 @@ impl Workspace {
                         .collect::<Vec<_>>(),
                     pane.has_focus(window, cx),
                     pane.pinned_count(),
+                    pane.is_frozen(),
                 )
             };
 
-            SerializedPane::new(items, active, pinned_count)
+            SerializedPane {
+                children: items,
+                active,
+                pinned_count,
+                frozen,
+            }
         }
 
         fn build_serialized_pane_group(
