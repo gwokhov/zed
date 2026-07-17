@@ -339,6 +339,7 @@ pub enum Event {
         direction: SplitDirection,
         mode: SplitMode,
     },
+    FrozenChanged,
     ItemPinned,
     ItemUnpinned,
     JoinAll,
@@ -374,6 +375,7 @@ impl fmt::Debug for Event {
                 .field("direction", direction)
                 .field("mode", mode)
                 .finish(),
+            Event::FrozenChanged => f.write_str("FrozenChanged"),
             Event::JoinAll => f.write_str("JoinAll"),
             Event::JoinIntoNext => f.write_str("JoinIntoNext"),
             Event::ChangeItemTitle => f.write_str("ChangeItemTitle"),
@@ -405,6 +407,7 @@ pub struct Pane {
     activation_history: Vec<ActivationHistoryEntry>,
     next_activation_timestamp: Arc<AtomicUsize>,
     zoomed: bool,
+    frozen: bool,
     was_focused: bool,
     active_item_index: usize,
     preview_item_id: Option<EntityId>,
@@ -577,6 +580,7 @@ impl Pane {
             next_activation_timestamp: next_timestamp.clone(),
             was_focused: false,
             zoomed: false,
+            frozen: false,
             active_item_index: 0,
             preview_item_id: None,
             max_tabs,
@@ -4190,6 +4194,32 @@ impl Pane {
     pub fn set_zoom_out_on_close(&mut self, zoom_out_on_close: bool) {
         self.zoom_out_on_close = zoom_out_on_close;
     }
+
+    pub(crate) fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    pub(crate) fn set_frozen(&mut self, frozen: bool, cx: &mut Context<Self>) {
+        self.frozen = frozen;
+        cx.notify();
+    }
+
+    fn toggle_frozen(&mut self, cx: &mut Context<Self>) {
+        self.set_frozen(!self.frozen, cx);
+        cx.emit(Event::FrozenChanged);
+    }
+
+    fn can_freeze(&self, cx: &mut Context<Self>) -> bool {
+        let current_pane = cx.entity();
+        self.workspace
+            .read_with(cx, |workspace, cx| {
+                workspace
+                    .panes()
+                    .iter()
+                    .any(|pane| pane != &current_pane && !pane.read(cx).is_frozen())
+            })
+            .unwrap_or(false)
+    }
 }
 
 fn default_render_tab_bar_buttons(
@@ -4262,6 +4292,28 @@ fn default_render_tab_bar_buttons(
                     .into()
                 }),
         )
+        .child({
+            let frozen = pane.is_frozen();
+            let can_freeze = pane.can_freeze(cx);
+            let tooltip = if frozen {
+                "Unfreeze Pane"
+            } else if can_freeze {
+                "Freeze Pane"
+            } else {
+                "At Least One Pane Must Remain Unfrozen"
+            };
+            IconButton::new("toggle_pane_frozen", IconName::LockOff)
+                .icon_size(IconSize::Small)
+                .toggle_state(frozen)
+                .selected_icon(IconName::Lock)
+                .disabled(!frozen && !can_freeze)
+                .on_click(cx.listener(|pane, _, _, cx| {
+                    if pane.frozen || pane.can_freeze(cx) {
+                        pane.toggle_frozen(cx);
+                    }
+                }))
+                .tooltip(Tooltip::text(tooltip))
+        })
         .child({
             let zoomed = pane.is_zoomed();
             IconButton::new("toggle_zoom", IconName::Maximize)

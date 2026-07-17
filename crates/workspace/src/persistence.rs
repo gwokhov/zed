@@ -1051,6 +1051,9 @@ impl Domain for WorkspaceDb {
         sql!(
             ALTER TABLE bookmarks ADD COLUMN label TEXT NOT NULL DEFAULT "";
         ),
+        sql!(
+            ALTER TABLE panes ADD COLUMN frozen INTEGER NOT NULL DEFAULT 0;
+        ),
     ];
 
     // Allow recovering from bad migration that was initially shipped to nightly
@@ -2234,6 +2237,7 @@ impl WorkspaceDb {
                     active: true,
                     children: vec![],
                     pinned_count: 0,
+                    frozen: false,
                 })
             }))
     }
@@ -2250,16 +2254,18 @@ impl WorkspaceDb {
             Option<PaneId>,
             Option<bool>,
             Option<usize>,
+            Option<bool>,
             Option<String>,
         );
         self.select_bound::<GroupKey, GroupOrPane>(sql!(
-            SELECT group_id, axis, pane_id, active, pinned_count, flexes
+            SELECT group_id, axis, pane_id, active, pinned_count, frozen, flexes
                 FROM (SELECT
                         group_id,
                         axis,
                         NULL as pane_id,
                         NULL as active,
                         NULL as pinned_count,
+                        NULL as frozen,
                         position,
                         parent_group_id,
                         workspace_id,
@@ -2272,6 +2278,7 @@ impl WorkspaceDb {
                         center_panes.pane_id,
                         panes.active as active,
                         pinned_count,
+                        frozen,
                         position,
                         parent_group_id,
                         panes.workspace_id as workspace_id,
@@ -2282,28 +2289,31 @@ impl WorkspaceDb {
                 ORDER BY position
         ))?((group_id, workspace_id))?
         .into_iter()
-        .map(|(group_id, axis, pane_id, active, pinned_count, flexes)| {
-            let maybe_pane = maybe!({ Some((pane_id?, active?, pinned_count?)) });
-            if let Some((group_id, axis)) = group_id.zip(axis) {
-                let flexes = flexes
-                    .map(|flexes: String| serde_json::from_str::<Vec<f32>>(&flexes))
-                    .transpose()?;
+        .map(
+            |(group_id, axis, pane_id, active, pinned_count, frozen, flexes)| {
+                let maybe_pane = maybe!({ Some((pane_id?, active?, pinned_count?, frozen?)) });
+                if let Some((group_id, axis)) = group_id.zip(axis) {
+                    let flexes = flexes
+                        .map(|flexes: String| serde_json::from_str::<Vec<f32>>(&flexes))
+                        .transpose()?;
 
-                Ok(SerializedPaneGroup::Group {
-                    axis,
-                    children: self.get_pane_group(workspace_id, Some(group_id))?,
-                    flexes,
-                })
-            } else if let Some((pane_id, active, pinned_count)) = maybe_pane {
-                Ok(SerializedPaneGroup::Pane(SerializedPane::new(
-                    self.get_items(pane_id)?,
-                    active,
-                    pinned_count,
-                )))
-            } else {
-                bail!("Pane Group Child was neither a pane group or a pane");
-            }
-        })
+                    Ok(SerializedPaneGroup::Group {
+                        axis,
+                        children: self.get_pane_group(workspace_id, Some(group_id))?,
+                        flexes,
+                    })
+                } else if let Some((pane_id, active, pinned_count, frozen)) = maybe_pane {
+                    Ok(SerializedPaneGroup::Pane(SerializedPane {
+                        children: self.get_items(pane_id)?,
+                        active,
+                        pinned_count,
+                        frozen,
+                    }))
+                } else {
+                    bail!("Pane Group Child was neither a pane group or a pane");
+                }
+            },
+        )
         // Filter out panes and pane groups which don't have any children or items
         .filter(|pane_group| match pane_group {
             Ok(SerializedPaneGroup::Group { children, .. }) => !children.is_empty(),
@@ -2373,10 +2383,10 @@ impl WorkspaceDb {
         parent: Option<(GroupId, usize)>,
     ) -> Result<PaneId> {
         let pane_id = conn.select_row_bound::<_, i64>(sql!(
-            INSERT INTO panes(workspace_id, active, pinned_count)
-            VALUES (?, ?, ?)
+            INSERT INTO panes(workspace_id, active, pinned_count, frozen)
+            VALUES (?, ?, ?, ?)
             RETURNING pane_id
-        ))?((workspace_id, pane.active, pane.pinned_count))?
+        ))?((workspace_id, pane.active, pane.pinned_count, pane.frozen))?
         .context("Could not retrieve inserted pane_id")?;
 
         let (parent_id, order) = parent.unzip();
