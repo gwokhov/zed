@@ -11218,6 +11218,8 @@ mod tests {
             SerializedGitPanel {
                 signoff_enabled: false,
                 commit_messages: panel.serialized_commit_messages(cx),
+                collapsed_staged: false,
+                collapsed_unstaged: false,
             }
         });
 
@@ -11269,6 +11271,8 @@ mod tests {
                     ..Default::default()
                 },
             )]),
+            collapsed_staged: false,
+            collapsed_unstaged: false,
         };
         let mismatched_panel = workspace.update_in(cx, |workspace, window, cx| {
             GitPanel::new_with_serialized_panel(
